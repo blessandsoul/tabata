@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>TABATA</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    height: 100%;
+    background: #000;
+    color: #fff;
+    font-family: 'VT323', monospace;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  body {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+  }
+
+  .stage {
+    flex: 1;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    overflow-y: auto;
+    padding: 30px 20px 80px;
+  }
+
+  /* Setup form */
+  .setup {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 28px;
+    font-size: 32px;
+    letter-spacing: 3px;
+    padding: 20px 0 40px;
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .field .label {
+    font-size: 28px;
+    letter-spacing: 4px;
+    opacity: 0.9;
+  }
+
+  .field .suffix {
+    font-size: 22px;
+    letter-spacing: 4px;
+    opacity: 0.7;
+  }
+
+  .setup input {
+    width: 220px;
+    height: 64px;
+    background: #000;
+    color: #fff;
+    border: 2px solid #fff;
+    font-family: 'VT323', monospace;
+    font-size: 40px;
+    text-align: center;
+    padding: 0 8px;
+    -moz-appearance: textfield;
+  }
+
+  .setup input::-webkit-outer-spin-button,
+  .setup input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  .setup input:focus { outline: none; }
+
+  .start-row {
+    display: flex;
+    justify-content: center;
+    margin-top: 10px;
+  }
+
+  .start-btn {
+    background: #fff;
+    color: #000;
+    border: 2px solid #fff;
+    font-family: 'VT323', monospace;
+    font-size: 40px;
+    letter-spacing: 4px;
+    padding: 10px 60px;
+    cursor: pointer;
+  }
+
+  .start-btn:hover { background: #eaeaea; }
+  .start-btn:focus { outline: none; }
+
+  /* Running view */
+  .runner {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 30px;
+  }
+
+  .phase {
+    font-size: 64px;
+    letter-spacing: 8px;
+  }
+
+  .phase.work { color: #fff; }
+  .phase.rest { color: #ff3b3b; }
+
+  .countdown {
+    font-size: 280px;
+    line-height: 1;
+    letter-spacing: 4px;
+    transition: transform 0.15s ease, color 0.15s ease;
+  }
+
+  .countdown.pulse { transform: scale(1.08); }
+  .countdown.warn { color: #ff3b3b; }
+
+  .round-info {
+    font-size: 32px;
+    letter-spacing: 4px;
+    opacity: 0.85;
+  }
+
+  .runner-controls {
+    display: flex;
+    gap: 14px;
+    margin-top: 10px;
+  }
+
+  .ctrl-btn {
+    background: transparent;
+    color: #fff;
+    border: 2px solid #fff;
+    font-family: 'VT323', monospace;
+    font-size: 28px;
+    letter-spacing: 3px;
+    padding: 8px 28px;
+    cursor: pointer;
+  }
+  .ctrl-btn:hover { background: #fff; color: #000; }
+  .ctrl-btn:focus { outline: none; }
+
+  /* Done */
+  .done {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 24px;
+  }
+  .done h1 {
+    font-size: 96px;
+    letter-spacing: 10px;
+  }
+
+  /* Show helpers */
+  .show { display: flex !important; }
+
+  @media (max-width: 640px) {
+    .setup { font-size: 28px; gap: 14px 16px; }
+    .setup input { width: 140px; height: 54px; font-size: 32px; }
+    .start-btn { font-size: 32px; padding: 8px 40px; }
+    .countdown { font-size: 180px; }
+    .phase { font-size: 44px; }
+  }
+</style>
+</head>
+<body>
+
+<main class="stage">
+  <!-- Setup -->
+  <form class="setup show" id="setupForm" autocomplete="off">
+    <div class="field">
+      <label class="label" for="rounds">FOR</label>
+      <input id="rounds" type="number" min="1" max="99" value="8" />
+      <span class="suffix">ROUND</span>
+    </div>
+
+    <div class="field">
+      <label class="label" for="work">WORK</label>
+      <input id="work" type="number" min="1" max="999" value="20" />
+      <span class="suffix">SECONDS</span>
+    </div>
+
+    <div class="field">
+      <label class="label" for="rest">REST</label>
+      <input id="rest" type="number" min="0" max="999" value="10" />
+      <span class="suffix">SECONDS</span>
+    </div>
+
+    <div class="start-row">
+      <button type="submit" class="start-btn">START</button>
+    </div>
+  </form>
+
+  <!-- Running -->
+  <section class="runner" id="runner">
+    <div class="phase work" id="phaseLabel">WORK</div>
+    <div class="countdown" id="countdown">20</div>
+    <div class="round-info" id="roundInfo">ROUND 1 / 8</div>
+    <div class="runner-controls">
+      <button class="ctrl-btn" id="pauseBtn">PAUSE</button>
+      <button class="ctrl-btn" id="stopBtn">STOP</button>
+    </div>
+  </section>
+
+  <!-- Done -->
+  <section class="done" id="done">
+    <h1>DONE</h1>
+    <button class="ctrl-btn" id="againBtn">AGAIN</button>
+  </section>
+</main>
+
+<audio id="keepalive" loop playsinline preload="auto"></audio>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+
+  const setupForm = $('setupForm');
+  const runner    = $('runner');
+  const doneView  = $('done');
+
+  const roundsInput = $('rounds');
+  const workInput   = $('work');
+  const restInput   = $('rest');
+
+  const phaseLabel = $('phaseLabel');
+  const countdown  = $('countdown');
+  const roundInfo  = $('roundInfo');
+
+  const pauseBtn = $('pauseBtn');
+  const stopBtn  = $('stopBtn');
+  const againBtn = $('againBtn');
+
+  const keepalive = $('keepalive');
+
+  // ---------- Build a near-silent looped WAV to keep iOS audio session alive ----------
+  function makeSilentWavUrl(duration = 1, sampleRate = 8000) {
+    const numSamples = Math.floor(sampleRate * duration);
+    const buf = new ArrayBuffer(44 + numSamples * 2);
+    const view = new DataView(buf);
+    const w = (o, s) => { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); };
+    w(0, 'RIFF');
+    view.setUint32(4, 36 + numSamples * 2, true);
+    w(8, 'WAVE'); w(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    w(36, 'data');
+    view.setUint32(40, numSamples * 2, true);
+    // tiny non-zero signal so iOS doesn't drop the audio session
+    for (let i = 0; i < numSamples; i++) {
+      view.setInt16(44 + i * 2, Math.floor(Math.sin(i * 0.05) * 2), true);
+    }
+    return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  }
+  keepalive.src = makeSilentWavUrl(1);
+
+  // ---------- Wake Lock (best-effort: keep screen on) ----------
+  let wakeLock = null;
+  async function requestWakeLock() {
+    try {
+      if ('wakeLock' in navigator) {
+        wakeLock = await navigator.wakeLock.request('screen');
+        wakeLock.addEventListener('release', () => { wakeLock = null; });
+      }
+    } catch {}
+  }
+  async function releaseWakeLock() {
+    try { if (wakeLock) await wakeLock.release(); } catch {}
+    wakeLock = null;
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && state && !state.paused && !wakeLock) {
+      requestWakeLock();
+    }
+  });
+
+  // ---------- Web Audio ----------
+  let audioCtx = null;
+  function ensureAudio() {
+    if (!audioCtx) {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      audioCtx = new Ctx();
+    }
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  }
+
+  const beepCfg = {
+    3:   { freq: 660,  dur: 0.16, gain: 0.18, type: 'square' },
+    2:   { freq: 880,  dur: 0.20, gain: 0.26, type: 'square' },
+    1:   { freq: 1100, dur: 0.26, gain: 0.34, type: 'square' },
+    end: { freq: 1320, dur: 0.55, gain: 0.35, type: 'sawtooth' },
+  };
+
+  function scheduleBeepAt(when, cfg) {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = cfg.type;
+    osc.frequency.setValueAtTime(cfg.freq, Math.max(when, audioCtx.currentTime));
+    gain.gain.setValueAtTime(0, when);
+    gain.gain.linearRampToValueAtTime(cfg.gain, when + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, when + cfg.dur);
+    osc.connect(gain).connect(audioCtx.destination);
+    osc.start(when);
+    osc.stop(when + cfg.dur + 0.05);
+    return osc;
+  }
+
+  // ---------- Plan ----------
+  function buildPlan(rounds, work, rest) {
+    const segments = [];
+    let cursor = 0;
+    for (let r = 1; r <= rounds; r++) {
+      segments.push({ start: cursor, end: cursor + work, phase: 'work', round: r });
+      cursor += work;
+      if (rest > 0 && r < rounds) {
+        segments.push({ start: cursor, end: cursor + rest, phase: 'rest', round: r });
+        cursor += rest;
+      }
+    }
+    return { segments, total: cursor };
+  }
+
+  // ---------- Run state ----------
+  let state = null;
+  let lastDisplayedSecond = null;
+
+  function show(view) {
+    setupForm.classList.remove('show');
+    runner.classList.remove('show');
+    doneView.classList.remove('show');
+    view.classList.add('show');
+  }
+
+  function scheduleAllFrom(elapsedSec) {
+    const t0 = audioCtx.currentTime - elapsedSec;
+    state.baseline = t0;
+    state.scheduled.forEach(o => { try { o.stop(); } catch {} });
+    state.scheduled = [];
+    state.plan.segments.forEach(seg => {
+      for (let n = 3; n >= 1; n--) {
+        const at = seg.end - n;
+        if (at > elapsedSec) {
+          state.scheduled.push(scheduleBeepAt(t0 + at, beepCfg[n]));
+        }
+      }
+      if (seg.end > elapsedSec) {
+        state.scheduled.push(scheduleBeepAt(t0 + seg.end, beepCfg.end));
+      }
+    });
+  }
+
+  function currentElapsed() {
+    if (!state) return 0;
+    if (state.paused) return state.pausedElapsedSec;
+    return audioCtx.currentTime - state.baseline;
+  }
+
+  function findSegment(elapsed) {
+    for (const seg of state.plan.segments) {
+      if (elapsed < seg.end) return { seg, secondsLeft: Math.max(0, Math.ceil(seg.end - elapsed)) };
+    }
+    return null;
+  }
+
+  function renderUI() {
+    if (!state) return;
+    const elapsed = currentElapsed();
+    if (elapsed >= state.plan.total) {
+      finish();
+      return;
+    }
+    const cur = findSegment(elapsed);
+    if (!cur) return;
+    const { seg, secondsLeft } = cur;
+    phaseLabel.textContent = seg.phase.toUpperCase();
+    phaseLabel.classList.toggle('work', seg.phase === 'work');
+    phaseLabel.classList.toggle('rest', seg.phase === 'rest');
+    if (secondsLeft !== lastDisplayedSecond) {
+      lastDisplayedSecond = secondsLeft;
+      countdown.textContent = secondsLeft;
+      countdown.classList.toggle('warn', secondsLeft <= 3 && secondsLeft > 0);
+      countdown.classList.remove('pulse');
+      void countdown.offsetWidth;
+      if (secondsLeft <= 3 && secondsLeft > 0) countdown.classList.add('pulse');
+    }
+    roundInfo.textContent = `ROUND ${seg.round} / ${state.rounds}`;
+  }
+
+  function start() {
+    const rounds = Math.max(1, parseInt(roundsInput.value, 10) || 1);
+    const work   = Math.max(1, parseInt(workInput.value, 10) || 1);
+    const rest   = Math.max(0, parseInt(restInput.value, 10) || 0);
+
+    ensureAudio();
+    keepalive.play().catch(() => {});
+    requestWakeLock();
+
+    if (state && state.uiInterval) clearInterval(state.uiInterval);
+
+    state = {
+      plan: buildPlan(rounds, work, rest),
+      baseline: 0,
+      paused: false,
+      pausedElapsedSec: 0,
+      scheduled: [],
+      uiInterval: null,
+      rounds, work, rest,
+    };
+    lastDisplayedSecond = null;
+
+    pauseBtn.textContent = 'PAUSE';
+    show(runner);
+    scheduleAllFrom(0);
+    renderUI();
+    state.uiInterval = setInterval(renderUI, 200);
+
+    if ('mediaSession' in navigator) {
+      try {
+        navigator.mediaSession.metadata = new MediaMetadata({ title: 'TABATA', artist: 'Timer' });
+        navigator.mediaSession.playbackState = 'playing';
+        navigator.mediaSession.setActionHandler('pause', togglePause);
+        navigator.mediaSession.setActionHandler('play', togglePause);
+        navigator.mediaSession.setActionHandler('stop', stop);
+      } catch {}
+    }
+  }
+
+  function pause() {
+    if (!state || state.paused) return;
+    state.pausedElapsedSec = currentElapsed();
+    state.paused = true;
+    state.scheduled.forEach(o => { try { o.stop(); } catch {} });
+    state.scheduled = [];
+    pauseBtn.textContent = 'RESUME';
+    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
+  }
+
+  function resume() {
+    if (!state || !state.paused) return;
+    ensureAudio();
+    keepalive.play().catch(() => {});
+    state.paused = false;
+    scheduleAllFrom(state.pausedElapsedSec);
+    renderUI();
+    pauseBtn.textContent = 'PAUSE';
+    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
+  }
+
+  function togglePause() {
+    if (!state) return;
+    state.paused ? resume() : pause();
+  }
+
+  function teardown() {
+    if (state) {
+      if (state.uiInterval) clearInterval(state.uiInterval);
+      state.scheduled.forEach(o => { try { o.stop(); } catch {} });
+    }
+    state = null;
+    lastDisplayedSecond = null;
+    keepalive.pause();
+    try { keepalive.currentTime = 0; } catch {}
+    releaseWakeLock();
+    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'none';
+  }
+
+  function stop() { teardown(); show(setupForm); }
+  function finish() { teardown(); show(doneView); }
+
+  setupForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    start();
+  });
+
+  pauseBtn.addEventListener('click', togglePause);
+  stopBtn.addEventListener('click', stop);
+  againBtn.addEventListener('click', () => show(setupForm));
+})();
+</script>
+</body>
+</html>
