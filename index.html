@@ -305,7 +305,7 @@
 
   function updateOptHint() {
     if (mixCb.checked) {
-      optHint.textContent = 'MIX MODE — PLAYS OVER SOUNDCLOUD/YOUTUBE/SPOTIFY. iOS WILL PAUSE BEEPS IF SCREEN LOCKS.';
+      optHint.textContent = 'MIX MODE — PLAYS OVER SOUNDCLOUD/YOUTUBE/SPOTIFY. iOS DOES NOT ALLOW MIXED AUDIO TO SURVIVE SCREEN LOCK FOR WEB APPS — KEEP THE SCREEN ON.';
     } else {
       optHint.textContent = 'SOLO MODE — TIMER SURVIVES SCREEN LOCK BUT PAUSES OTHER MUSIC APPS.';
     }
@@ -341,6 +341,13 @@
     if (document.visibilityState === 'visible' && state && !state.paused) {
       if (!wakeLock) requestWakeLock();
       if (audioEl.paused) audioEl.play().catch(() => {});
+    }
+  });
+  // If iOS pauses us while backgrounded, this fires when the user returns —
+  // try to resume immediately so the workout picks back up.
+  audioEl.addEventListener('pause', () => {
+    if (state && !state.paused && document.visibilityState === 'visible') {
+      audioEl.play().catch(() => {});
     }
   });
 
@@ -479,6 +486,17 @@
       if (secondsLeft <= 3 && secondsLeft > 0) countdown.classList.add('pulse');
     }
     roundInfo.textContent = `ROUND ${seg.round} / ${state.rounds}`;
+
+    // Keep iOS's Now Playing UI honest — better OS treatment of the session.
+    if ('mediaSession' in navigator && navigator.mediaSession.setPositionState) {
+      try {
+        navigator.mediaSession.setPositionState({
+          duration: state.plan.total,
+          playbackRate: 1,
+          position: elapsed,
+        });
+      } catch {}
+    }
   }
 
   async function start() {
@@ -506,9 +524,12 @@
     audioEl.src = url;
     audioEl.loop = false;
 
-    // Switch the iOS audio session type BEFORE play() so the OS knows
-    // whether to mix with other apps or take over.
-    setAudioSession(mixMode ? 'ambient' : 'playback');
+    // Switch the iOS audio session type BEFORE play().
+    // Solo mode → 'playback' (survives screen lock, takes over the audio session).
+    // Mix mode  → 'auto' so WebKit picks the most permissive mixing category
+    //             we have access to. iOS does NOT expose playback+mixWithOthers
+    //             to web apps, so mix mode cannot also survive screen lock.
+    setAudioSession(mixMode ? 'auto' : 'playback');
 
     state = { plan, rounds, work, rest, paused: false, audioUrl: url, uiInterval: null, mixMode };
     lastDisplayedSecond = null;
@@ -538,6 +559,13 @@
         navigator.mediaSession.setActionHandler('pause', togglePause);
         navigator.mediaSession.setActionHandler('play',  togglePause);
         navigator.mediaSession.setActionHandler('stop',  stop);
+        if (navigator.mediaSession.setPositionState) {
+          navigator.mediaSession.setPositionState({
+            duration: state.plan.total,
+            playbackRate: 1,
+            position: 0,
+          });
+        }
       } catch {}
     }
 
