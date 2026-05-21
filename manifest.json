@@ -1,0 +1,11 @@
+{
+  "name": "TABATA",
+  "short_name": "TABATA",
+  "description": "Tabata interval timer with countdown beeps.",
+  "start_url": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "icons": []
+}

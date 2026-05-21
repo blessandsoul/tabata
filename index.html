@@ -2,7 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="TABATA" />
+<meta name="theme-color" content="#000000" />
+<link rel="manifest" href="manifest.json" />
 <title>TABATA</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -143,6 +149,17 @@
     margin-top: 10px;
   }
 
+  .status {
+    font-size: 18px;
+    letter-spacing: 2px;
+    opacity: 0.55;
+    margin-top: 8px;
+    text-align: center;
+    max-width: 340px;
+    line-height: 1.3;
+  }
+  .status.warn { color: #ffb84d; opacity: 0.85; }
+
   .ctrl-btn {
     background: transparent;
     color: #fff;
@@ -217,6 +234,7 @@
       <button class="ctrl-btn" id="pauseBtn">PAUSE</button>
       <button class="ctrl-btn" id="stopBtn">STOP</button>
     </div>
+    <div class="status" id="status"></div>
   </section>
 
   <!-- Done -->
@@ -249,6 +267,12 @@
   const againBtn = $('againBtn');
 
   const keepalive = $('keepalive');
+  const statusEl  = $('status');
+
+  function setStatus(text, warn = false) {
+    statusEl.textContent = text || '';
+    statusEl.classList.toggle('warn', !!warn);
+  }
 
   // ---------- Build a near-silent looped WAV to keep iOS audio session alive ----------
   function makeSilentWavUrl(duration = 1, sampleRate = 8000) {
@@ -268,9 +292,9 @@
     view.setUint16(34, 16, true);
     w(36, 'data');
     view.setUint32(40, numSamples * 2, true);
-    // tiny non-zero signal so iOS doesn't drop the audio session
+    // low but non-trivial signal so iOS recognizes this as active media
     for (let i = 0; i < numSamples; i++) {
-      view.setInt16(44 + i * 2, Math.floor(Math.sin(i * 0.05) * 2), true);
+      view.setInt16(44 + i * 2, Math.floor(Math.sin(i * 0.05) * 40), true);
     }
     return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
   }
@@ -279,20 +303,27 @@
   // ---------- Wake Lock (best-effort: keep screen on) ----------
   let wakeLock = null;
   async function requestWakeLock() {
+    if (!('wakeLock' in navigator)) {
+      setStatus('SCREEN-LOCK NOT SUPPORTED — KEEP SCREEN ON MANUALLY', true);
+      return;
+    }
     try {
-      if ('wakeLock' in navigator) {
-        wakeLock = await navigator.wakeLock.request('screen');
-        wakeLock.addEventListener('release', () => { wakeLock = null; });
-      }
-    } catch {}
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+      setStatus('SCREEN WILL STAY ON');
+    } catch (e) {
+      setStatus('WAKE LOCK FAILED — DEPLOY OVER HTTPS', true);
+    }
   }
   async function releaseWakeLock() {
     try { if (wakeLock) await wakeLock.release(); } catch {}
     wakeLock = null;
   }
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && state && !state.paused && !wakeLock) {
-      requestWakeLock();
+    if (document.visibilityState === 'visible' && state && !state.paused) {
+      if (!wakeLock) requestWakeLock();
+      if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+      keepalive.play().catch(() => {});
     }
   });
 
@@ -486,8 +517,8 @@
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'none';
   }
 
-  function stop() { teardown(); show(setupForm); }
-  function finish() { teardown(); show(doneView); }
+  function stop() { teardown(); setStatus(''); show(setupForm); }
+  function finish() { teardown(); setStatus(''); show(doneView); }
 
   setupForm.addEventListener('submit', (e) => {
     e.preventDefault();
