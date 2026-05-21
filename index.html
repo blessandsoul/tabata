@@ -244,7 +244,7 @@
   </section>
 </main>
 
-<audio id="keepalive" loop playsinline preload="auto"></audio>
+<audio id="audioEl" playsinline preload="auto" x-webkit-airplay="deny"></audio>
 
 <script>
 (() => {
@@ -266,7 +266,7 @@
   const stopBtn  = $('stopBtn');
   const againBtn = $('againBtn');
 
-  const keepalive = $('keepalive');
+  const audioEl   = $('audioEl');
   const statusEl  = $('status');
 
   function setStatus(text, warn = false) {
@@ -274,46 +274,14 @@
     statusEl.classList.toggle('warn', !!warn);
   }
 
-  // ---------- Build a near-silent looped WAV to keep iOS audio session alive ----------
-  function makeSilentWavUrl(duration = 1, sampleRate = 8000) {
-    const numSamples = Math.floor(sampleRate * duration);
-    const buf = new ArrayBuffer(44 + numSamples * 2);
-    const view = new DataView(buf);
-    const w = (o, s) => { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); };
-    w(0, 'RIFF');
-    view.setUint32(4, 36 + numSamples * 2, true);
-    w(8, 'WAVE'); w(12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * 2, true);
-    view.setUint16(32, 2, true);
-    view.setUint16(34, 16, true);
-    w(36, 'data');
-    view.setUint32(40, numSamples * 2, true);
-    // low but non-trivial signal so iOS recognizes this as active media
-    for (let i = 0; i < numSamples; i++) {
-      view.setInt16(44 + i * 2, Math.floor(Math.sin(i * 0.05) * 40), true);
-    }
-    return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
-  }
-  keepalive.src = makeSilentWavUrl(1);
-
-  // ---------- Wake Lock (best-effort: keep screen on) ----------
+  // ---------- Wake Lock (keeps screen from auto-locking; needs HTTPS) ----------
   let wakeLock = null;
   async function requestWakeLock() {
-    if (!('wakeLock' in navigator)) {
-      setStatus('SCREEN-LOCK NOT SUPPORTED — KEEP SCREEN ON MANUALLY', true);
-      return;
-    }
+    if (!('wakeLock' in navigator)) return;
     try {
       wakeLock = await navigator.wakeLock.request('screen');
       wakeLock.addEventListener('release', () => { wakeLock = null; });
-      setStatus('SCREEN WILL STAY ON');
-    } catch (e) {
-      setStatus('WAKE LOCK FAILED — DEPLOY OVER HTTPS', true);
-    }
+    } catch {}
   }
   async function releaseWakeLock() {
     try { if (wakeLock) await wakeLock.release(); } catch {}
@@ -322,41 +290,9 @@
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && state && !state.paused) {
       if (!wakeLock) requestWakeLock();
-      if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
-      keepalive.play().catch(() => {});
+      if (audioEl.paused) audioEl.play().catch(() => {});
     }
   });
-
-  // ---------- Web Audio ----------
-  let audioCtx = null;
-  function ensureAudio() {
-    if (!audioCtx) {
-      const Ctx = window.AudioContext || window.webkitAudioContext;
-      audioCtx = new Ctx();
-    }
-    if (audioCtx.state === 'suspended') audioCtx.resume();
-  }
-
-  const beepCfg = {
-    3:   { freq: 660,  dur: 0.16, gain: 0.18, type: 'square' },
-    2:   { freq: 880,  dur: 0.20, gain: 0.26, type: 'square' },
-    1:   { freq: 1100, dur: 0.26, gain: 0.34, type: 'square' },
-    end: { freq: 1320, dur: 0.55, gain: 0.35, type: 'sawtooth' },
-  };
-
-  function scheduleBeepAt(when, cfg) {
-    const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    osc.type = cfg.type;
-    osc.frequency.setValueAtTime(cfg.freq, Math.max(when, audioCtx.currentTime));
-    gain.gain.setValueAtTime(0, when);
-    gain.gain.linearRampToValueAtTime(cfg.gain, when + 0.01);
-    gain.gain.exponentialRampToValueAtTime(0.0001, when + cfg.dur);
-    osc.connect(gain).connect(audioCtx.destination);
-    osc.start(when);
-    osc.stop(when + cfg.dur + 0.05);
-    return osc;
-  }
 
   // ---------- Plan ----------
   function buildPlan(rounds, work, rest) {
@@ -373,6 +309,83 @@
     return { segments, total: cursor };
   }
 
+  // ---------- PCM generation: bake the entire workout into one WAV blob ----------
+  const BEEP_CFG = {
+    3:   { freq: 660,  dur: 0.18, gain: 0.45, type: 'square' },
+    2:   { freq: 880,  dur: 0.22, gain: 0.6,  type: 'square' },
+    1:   { freq: 1100, dur: 0.28, gain: 0.75, type: 'square' },
+    end: { freq: 1320, dur: 0.55, gain: 0.75, type: 'saw'    },
+  };
+
+  function mixBeep(samples, sr, when, cfg) {
+    const startSample = Math.floor(when * sr);
+    if (startSample >= samples.length || startSample < 0) return;
+    const durSamples = Math.floor(cfg.dur * sr);
+    const attack = Math.floor(sr * 0.006);
+    for (let i = 0; i < durSamples; i++) {
+      const idx = startSample + i;
+      if (idx >= samples.length) break;
+      const t = i / sr;
+      let s;
+      if (cfg.type === 'square')      s = Math.sin(2 * Math.PI * cfg.freq * t) > 0 ? 1 : -1;
+      else if (cfg.type === 'saw')    s = ((t * cfg.freq) % 1) * 2 - 1;
+      else                            s = Math.sin(2 * Math.PI * cfg.freq * t);
+
+      let env;
+      if (i < attack) env = i / attack;
+      else            env = Math.exp(-((i - attack) / (durSamples - attack)) * 6);
+
+      samples[idx] += s * cfg.gain * env;
+    }
+  }
+
+  function generateWorkoutWavBlob(plan) {
+    const sr = 16000;
+    // pad an extra 0.2s so the final end-tone has tail
+    const totalSamples = Math.ceil((plan.total + 0.2) * sr);
+    const samples = new Float32Array(totalSamples);
+
+    // Continuous low-amplitude pink-ish noise floor so iOS sees the
+    // playback as active media (NOT silence) the entire time.
+    let last = 0;
+    for (let i = 0; i < totalSamples; i++) {
+      const n = (Math.random() - 0.5) * 0.012;
+      last = last * 0.85 + n * 0.15;
+      samples[i] = last;
+    }
+
+    for (const seg of plan.segments) {
+      for (let n = 3; n >= 1; n--) {
+        const at = seg.end - n;
+        if (at >= 0) mixBeep(samples, sr, at, BEEP_CFG[n]);
+      }
+      mixBeep(samples, sr, seg.end, BEEP_CFG.end);
+    }
+
+    // Encode as 16-bit PCM WAV
+    const buf = new ArrayBuffer(44 + totalSamples * 2);
+    const view = new DataView(buf);
+    const w = (o, s) => { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); };
+    w(0, 'RIFF');
+    view.setUint32(4, 36 + totalSamples * 2, true);
+    w(8, 'WAVE'); w(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sr, true);
+    view.setUint32(28, sr * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    w(36, 'data');
+    view.setUint32(40, totalSamples * 2, true);
+    for (let i = 0; i < totalSamples; i++) {
+      let s = samples[i];
+      if (s > 1) s = 1; else if (s < -1) s = -1;
+      view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+    return new Blob([buf], { type: 'audio/wav' });
+  }
+
   // ---------- Run state ----------
   let state = null;
   let lastDisplayedSecond = null;
@@ -384,30 +397,6 @@
     view.classList.add('show');
   }
 
-  function scheduleAllFrom(elapsedSec) {
-    const t0 = audioCtx.currentTime - elapsedSec;
-    state.baseline = t0;
-    state.scheduled.forEach(o => { try { o.stop(); } catch {} });
-    state.scheduled = [];
-    state.plan.segments.forEach(seg => {
-      for (let n = 3; n >= 1; n--) {
-        const at = seg.end - n;
-        if (at > elapsedSec) {
-          state.scheduled.push(scheduleBeepAt(t0 + at, beepCfg[n]));
-        }
-      }
-      if (seg.end > elapsedSec) {
-        state.scheduled.push(scheduleBeepAt(t0 + seg.end, beepCfg.end));
-      }
-    });
-  }
-
-  function currentElapsed() {
-    if (!state) return 0;
-    if (state.paused) return state.pausedElapsedSec;
-    return audioCtx.currentTime - state.baseline;
-  }
-
   function findSegment(elapsed) {
     for (const seg of state.plan.segments) {
       if (elapsed < seg.end) return { seg, secondsLeft: Math.max(0, Math.ceil(seg.end - elapsed)) };
@@ -417,8 +406,8 @@
 
   function renderUI() {
     if (!state) return;
-    const elapsed = currentElapsed();
-    if (elapsed >= state.plan.total) {
+    const elapsed = audioEl.currentTime;
+    if (elapsed >= state.plan.total - 0.05 || audioEl.ended) {
       finish();
       return;
     }
@@ -439,62 +428,73 @@
     roundInfo.textContent = `ROUND ${seg.round} / ${state.rounds}`;
   }
 
-  function start() {
+  async function start() {
     const rounds = Math.max(1, parseInt(roundsInput.value, 10) || 1);
     const work   = Math.max(1, parseInt(workInput.value, 10) || 1);
     const rest   = Math.max(0, parseInt(restInput.value, 10) || 0);
 
-    ensureAudio();
-    keepalive.play().catch(() => {});
-    requestWakeLock();
+    const plan = buildPlan(rounds, work, rest);
 
-    if (state && state.uiInterval) clearInterval(state.uiInterval);
+    show(runner);
+    phaseLabel.textContent = 'PREPARING';
+    countdown.textContent = '…';
+    roundInfo.textContent = `ROUND 1 / ${rounds}`;
+    setStatus('BUILDING AUDIO…');
 
-    state = {
-      plan: buildPlan(rounds, work, rest),
-      baseline: 0,
-      paused: false,
-      pausedElapsedSec: 0,
-      scheduled: [],
-      uiInterval: null,
-      rounds, work, rest,
-    };
+    // yield one frame so the UI updates before we crunch samples
+    await new Promise(r => setTimeout(r, 0));
+
+    const blob = generateWorkoutWavBlob(plan);
+    const url = URL.createObjectURL(blob);
+    audioEl.src = url;
+    audioEl.loop = false;
+
+    state = { plan, rounds, work, rest, paused: false, audioUrl: url, uiInterval: null };
     lastDisplayedSecond = null;
 
-    pauseBtn.textContent = 'PAUSE';
-    show(runner);
-    scheduleAllFrom(0);
-    renderUI();
-    state.uiInterval = setInterval(renderUI, 200);
+    try {
+      await audioEl.play();
+    } catch (e) {
+      teardown();
+      setStatus('AUDIO BLOCKED — TAP START AGAIN', true);
+      show(setupForm);
+      return;
+    }
+
+    requestWakeLock();
+    setStatus('SCREEN MAY LOCK — AUDIO KEEPS PLAYING');
 
     if ('mediaSession' in navigator) {
       try {
-        navigator.mediaSession.metadata = new MediaMetadata({ title: 'TABATA', artist: 'Timer' });
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title:  'TABATA',
+          artist: `${rounds} × ${work}s / ${rest}s`,
+          album:  'Workout Timer',
+        });
         navigator.mediaSession.playbackState = 'playing';
         navigator.mediaSession.setActionHandler('pause', togglePause);
-        navigator.mediaSession.setActionHandler('play', togglePause);
-        navigator.mediaSession.setActionHandler('stop', stop);
+        navigator.mediaSession.setActionHandler('play',  togglePause);
+        navigator.mediaSession.setActionHandler('stop',  stop);
       } catch {}
     }
+
+    pauseBtn.textContent = 'PAUSE';
+    state.uiInterval = setInterval(renderUI, 200);
+    renderUI();
   }
 
   function pause() {
     if (!state || state.paused) return;
-    state.pausedElapsedSec = currentElapsed();
+    audioEl.pause();
     state.paused = true;
-    state.scheduled.forEach(o => { try { o.stop(); } catch {} });
-    state.scheduled = [];
     pauseBtn.textContent = 'RESUME';
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
   }
 
   function resume() {
     if (!state || !state.paused) return;
-    ensureAudio();
-    keepalive.play().catch(() => {});
+    audioEl.play().catch(() => {});
     state.paused = false;
-    scheduleAllFrom(state.pausedElapsedSec);
-    renderUI();
     pauseBtn.textContent = 'PAUSE';
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
   }
@@ -507,18 +507,29 @@
   function teardown() {
     if (state) {
       if (state.uiInterval) clearInterval(state.uiInterval);
-      state.scheduled.forEach(o => { try { o.stop(); } catch {} });
+      if (state.audioUrl) URL.revokeObjectURL(state.audioUrl);
     }
     state = null;
     lastDisplayedSecond = null;
-    keepalive.pause();
-    try { keepalive.currentTime = 0; } catch {}
+    try { audioEl.pause(); } catch {}
+    try { audioEl.currentTime = 0; } catch {}
+    audioEl.removeAttribute('src');
+    try { audioEl.load(); } catch {}
     releaseWakeLock();
-    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'none';
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.playbackState = 'none';
+      try {
+        navigator.mediaSession.setActionHandler('pause', null);
+        navigator.mediaSession.setActionHandler('play',  null);
+        navigator.mediaSession.setActionHandler('stop',  null);
+      } catch {}
+    }
   }
 
   function stop() { teardown(); setStatus(''); show(setupForm); }
   function finish() { teardown(); setStatus(''); show(doneView); }
+
+  audioEl.addEventListener('ended', finish);
 
   setupForm.addEventListener('submit', (e) => {
     e.preventDefault();
