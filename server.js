@@ -113,7 +113,40 @@ async function attemptResolve(scUrl, cid) {
   };
 }
 
-async function resolveTrack(scUrl) {
+// Mobile/share URLs come decorated with ?si=…&utm_source=… or use the
+// on.soundcloud.com shortener. SoundCloud's /resolve endpoint matches by
+// exact path, so we normalise to https://soundcloud.com/<user>/<slug>.
+async function normalizeScUrl(input) {
+  let u;
+  try { u = new URL(input.trim()); }
+  catch { throw new Error('invalid URL'); }
+
+  // Expand short-links to their full track URL.
+  if (
+    u.hostname === 'on.soundcloud.com' ||
+    u.hostname === 'soundcloud.app.goo.gl' ||
+    u.hostname.endsWith('.smart.link')
+  ) {
+    try {
+      const r = await fetch(u.toString(), {
+        headers: { 'User-Agent': UA, 'Accept': 'text/html' },
+        redirect: 'follow',
+      });
+      if (r.url && r.url !== u.toString()) u = new URL(r.url);
+    } catch {}
+  }
+
+  if (u.hostname === 'm.soundcloud.com' || u.hostname === 'www.soundcloud.com') {
+    u.hostname = 'soundcloud.com';
+  }
+  // Strip tracking params + fragments. Path alone is what /resolve matches.
+  u.search = '';
+  u.hash = '';
+  return u.toString();
+}
+
+async function resolveTrack(rawUrl) {
+  const scUrl = await normalizeScUrl(rawUrl);
   let lastErr = null;
   const tried = new Set();
 
