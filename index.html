@@ -158,6 +158,28 @@
   }
   .music-clear.show { display: inline; }
 
+  .music-sep {
+    font-size: 18px;
+    letter-spacing: 4px;
+    opacity: 0.5;
+    margin: 2px 0;
+  }
+  .sc-url {
+    width: 320px;
+    max-width: 90vw;
+    height: 54px;
+    background: #000;
+    color: #fff;
+    border: 2px solid #fff;
+    font-family: 'VT323', monospace;
+    font-size: 22px;
+    letter-spacing: 1px;
+    text-align: center;
+    padding: 0 12px;
+  }
+  .sc-url:focus { outline: none; }
+  .sc-url::placeholder { color: #fff; opacity: 0.4; letter-spacing: 2px; }
+
   .start-btn {
     background: #fff;
     color: #000;
@@ -285,6 +307,8 @@
       <input type="file" id="musicFileInput" accept="audio/*" hidden />
       <button type="button" id="musicBtn" class="music-btn">+ ADD MUSIC FILE</button>
       <button type="button" id="musicClearBtn" class="music-clear">REMOVE</button>
+      <div class="music-sep">— OR —</div>
+      <input type="url" id="scUrlInput" class="sc-url" placeholder="PASTE SOUNDCLOUD URL" autocomplete="off" inputmode="url" spellcheck="false" />
     </div>
 
     <label class="opt" id="mixOpt">
@@ -317,7 +341,7 @@
   </section>
 </main>
 
-<audio id="audioEl" playsinline preload="auto" x-webkit-airplay="deny"></audio>
+<audio id="audioEl" playsinline preload="auto" crossorigin="anonymous" x-webkit-airplay="deny"></audio>
 
 <script>
 (() => {
@@ -347,13 +371,79 @@
   const musicFileEl   = $('musicFileInput');
   const musicBtn      = $('musicBtn');
   const musicClearBtn = $('musicClearBtn');
+  const scUrlInput    = $('scUrlInput');
 
   let musicURL = null;
   let musicFileName = null;
 
+  // ---------- SoundCloud (anonymous, scraped client_id) ----------
+  // SoundCloud closed new app registrations in 2021; the only way to play
+  // public SoundCloud tracks from a browser is to use the client_id that
+  // their own website bundles. Rotate this if it stops working — open any
+  // SoundCloud page → view source → grep for "client_id=".
+  const SC_CLIENT_IDS = [
+    'iZIs9mchVcX5lhVRyQGGAYlNPVldzAoX',
+    '2t9loNQH90kzJcsFCODdigxfp325aq4z',
+    'T5R4kgWS2PRf6lzLyIravUMnKlbIxQag',
+    'a3e059563d7fd3372b49b37f00a00bcf',
+  ];
+
+  function isSoundCloudUrl(s) {
+    if (!s) return false;
+    try {
+      const u = new URL(s.trim());
+      return /(^|\.)soundcloud\.com$/.test(u.hostname);
+    } catch { return false; }
+  }
+
+  async function resolveSoundCloudTrack(scUrl) {
+    let lastErr = null;
+    for (const cid of SC_CLIENT_IDS) {
+      try {
+        const r = await fetch(
+          `https://api-v2.soundcloud.com/resolve?url=${encodeURIComponent(scUrl)}&client_id=${cid}`,
+          { credentials: 'omit' }
+        );
+        if (r.status === 401 || r.status === 403) { lastErr = new Error('client_id rejected'); continue; }
+        if (!r.ok) { lastErr = new Error('resolve status ' + r.status); continue; }
+        const track = await r.json();
+        if (track.kind !== 'track') throw new Error('URL is not a single track');
+        if (!track.media || !track.media.transcodings || !track.media.transcodings.length) {
+          throw new Error('no streams available');
+        }
+        // Prefer progressive MP3, fall back to HLS (Safari plays HLS natively).
+        const tr = track.media.transcodings.find(t =>
+                    t.format && t.format.protocol === 'progressive')
+                || track.media.transcodings.find(t =>
+                    t.format && t.format.protocol === 'hls');
+        if (!tr) throw new Error('no usable transcoding');
+
+        const sep = tr.url.includes('?') ? '&' : '?';
+        const sr = await fetch(`${tr.url}${sep}client_id=${cid}`, { credentials: 'omit' });
+        if (!sr.ok) { lastErr = new Error('stream-url status ' + sr.status); continue; }
+        const { url: streamUrl } = await sr.json();
+        if (!streamUrl) throw new Error('empty stream url');
+
+        return {
+          streamUrl,
+          title:  track.title,
+          artist: track.user && track.user.username,
+        };
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    throw lastErr || new Error('all client_ids failed');
+  }
+
   function updateOptHint() {
-    if (musicURL) {
-      optHint.textContent = 'MUSIC MODE — TRACK + WORKOUT BEEPS PLAY TOGETHER AND SURVIVE SCREEN LOCK.';
+    const hasSc = isSoundCloudUrl(scUrlInput.value);
+    if (musicURL || hasSc) {
+      if (musicURL) {
+        optHint.textContent = 'MUSIC FILE — TRACK + WORKOUT BEEPS PLAY TOGETHER AND SURVIVE SCREEN LOCK.';
+      } else {
+        optHint.textContent = 'SOUNDCLOUD — TRACK + WORKOUT BEEPS PLAY TOGETHER AND SURVIVE SCREEN LOCK. PUBLIC TRACKS ONLY.';
+      }
       mixOpt.style.display = 'none';
     } else {
       mixOpt.style.display = 'flex';
@@ -365,6 +455,7 @@
     }
   }
   mixCb.addEventListener('change', updateOptHint);
+  scUrlInput.addEventListener('input', updateOptHint);
 
   musicBtn.addEventListener('click', () => musicFileEl.click());
   musicFileEl.addEventListener('change', () => {
@@ -616,8 +707,10 @@
     const rounds = Math.max(1, parseInt(roundsInput.value, 10) || 1);
     const work   = Math.max(1, parseInt(workInput.value, 10) || 1);
     const rest   = Math.max(0, parseInt(restInput.value, 10) || 0);
-    const hasMusic = !!musicURL;
-    const mixMode = !hasMusic && mixCb.checked;
+    const scUrl  = scUrlInput.value.trim();
+    const hasFile = !!musicURL;
+    const hasSc   = isSoundCloudUrl(scUrl);
+    const mixMode = !hasFile && !hasSc && mixCb.checked;
 
     const plan = buildPlan(rounds, work, rest);
 
@@ -625,19 +718,33 @@
     phaseLabel.textContent = 'PREPARING';
     countdown.textContent = '…';
     roundInfo.textContent = `ROUND 1 / ${rounds}`;
-    setStatus(hasMusic ? 'LOADING MUSIC…' : 'BUILDING AUDIO…');
 
-    // yield one frame so the UI updates before we crunch samples
-    await new Promise(r => setTimeout(r, 0));
-
-    if (hasMusic) {
-      await startMusicMode(plan, rounds, work, rest);
+    if (hasFile) {
+      setStatus('LOADING MUSIC…');
+      await new Promise(r => setTimeout(r, 0));
+      await startMusicMode(plan, rounds, work, rest, musicURL, musicFileName);
+    } else if (hasSc) {
+      setStatus('FETCHING SOUNDCLOUD…');
+      let resolved;
+      try {
+        resolved = await resolveSoundCloudTrack(scUrl);
+      } catch (e) {
+        setStatus('SOUNDCLOUD: ' + (e.message || 'failed'), true);
+        show(setupForm);
+        return;
+      }
+      const label = resolved.artist
+        ? `${resolved.title} — ${resolved.artist}`
+        : resolved.title;
+      await startMusicMode(plan, rounds, work, rest, resolved.streamUrl, label);
     } else {
+      setStatus('BUILDING AUDIO…');
+      await new Promise(r => setTimeout(r, 0));
       await startBakedWavMode(plan, rounds, work, rest, mixMode);
     }
   }
 
-  async function startMusicMode(plan, rounds, work, rest) {
+  async function startMusicMode(plan, rounds, work, rest, sourceUrl, sourceLabel) {
     const ctx = ensureWebCtx();
     if (!mediaElSrc) {
       setStatus('AUDIO ROUTING FAILED', true);
@@ -645,7 +752,7 @@
       return;
     }
 
-    audioEl.src = musicURL;
+    audioEl.src = sourceUrl;
     audioEl.loop = true;
 
     // Disconnect previous run's graph (musicGain, scheduled oscillators
@@ -696,7 +803,7 @@
     if ('mediaSession' in navigator) {
       try {
         navigator.mediaSession.metadata = new MediaMetadata({
-          title:  musicFileName || 'TABATA',
+          title:  sourceLabel || 'TABATA',
           artist: `${rounds} × ${work}s / ${rest}s`,
           album:  'Workout Timer',
         });
