@@ -16,7 +16,7 @@ const UA =
 // JS bundle. Rotate via the SC_CLIENT_ID env var if all of these stop
 // working — open any soundcloud.com page, view source, grep for
 // "client_id=".
-const SC_CLIENT_IDS = [
+const SC_FALLBACK_IDS = [
   process.env.SC_CLIENT_ID,
   'iZIs9mchVcX5lhVRyQGGAYlNPVldzAoX',
   '2t9loNQH90kzJcsFCODdigxfp325aq4z',
@@ -25,6 +25,44 @@ const SC_CLIENT_IDS = [
 ].filter(Boolean);
 
 let workingId = null;
+let scrapedId = null;
+let scrapedAt = 0;
+const SCRAPE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+// Scrape a current client_id straight from soundcloud.com's own JS bundle.
+// This is how every unofficial SoundCloud library stays alive when SC
+// rotates keys.
+async function scrapeClientId(force = false) {
+  if (!force && scrapedId && Date.now() - scrapedAt < SCRAPE_TTL_MS) {
+    return scrapedId;
+  }
+  try {
+    const r = await fetch('https://soundcloud.com/discover', {
+      headers: { 'User-Agent': UA, 'Accept': 'text/html' },
+    });
+    if (!r.ok) return scrapedId;
+    const html = await r.text();
+    const urls = [...html.matchAll(/<script[^>]+src="(https:\/\/a-v2\.sndcdn\.com\/assets\/[^"]+\.js)"/g)].map(m => m[1]);
+    // Last script tends to be the main bundle with the client_id.
+    for (const u of urls.reverse()) {
+      try {
+        const sr = await fetch(u, { headers: { 'User-Agent': UA } });
+        if (!sr.ok) continue;
+        const js = await sr.text();
+        const m = js.match(/client_id\s*[:=]\s*["']([a-zA-Z0-9]{32})["']/);
+        if (m) {
+          scrapedId = m[1];
+          scrapedAt = Date.now();
+          console.log(`SC: scraped fresh client_id ${scrapedId.slice(0, 6)}…`);
+          return scrapedId;
+        }
+      } catch {}
+    }
+  } catch (e) {
+    console.warn('SC scrape error:', e.message);
+  }
+  return scrapedId;
+}
 
 async function scFetch(url, cid) {
   const sep = url.includes('?') ? '&' : '?';
@@ -33,62 +71,88 @@ async function scFetch(url, cid) {
   });
 }
 
+async function attemptResolve(scUrl, cid) {
+  const r = await scFetch(
+    `https://api-v2.soundcloud.com/resolve?url=${encodeURIComponent(scUrl)}`,
+    cid
+  );
+  if (r.status === 401 || r.status === 403) {
+    const err = new Error(`client_id rejected (${r.status})`);
+    err.rejected = true;
+    throw err;
+  }
+  if (!r.ok) throw new Error(`resolve status ${r.status}`);
+
+  const track = await r.json();
+  if (track.kind !== 'track') throw new Error('URL is not a single track');
+  if (!track.media || !Array.isArray(track.media.transcodings) || !track.media.transcodings.length) {
+    throw new Error('no streams available');
+  }
+
+  const tr =
+    track.media.transcodings.find((t) => t.format && t.format.protocol === 'progressive') ||
+    track.media.transcodings.find((t) => t.format && t.format.protocol === 'hls');
+  if (!tr) throw new Error('no usable transcoding');
+
+  const sr = await scFetch(tr.url, cid);
+  if (sr.status === 401 || sr.status === 403) {
+    const err = new Error(`client_id rejected on stream (${sr.status})`);
+    err.rejected = true;
+    throw err;
+  }
+  if (!sr.ok) throw new Error(`stream-url status ${sr.status}`);
+  const body = await sr.json();
+  if (!body || !body.url) throw new Error('empty stream url');
+
+  return {
+    streamUrl: body.url,
+    protocol: tr.format.protocol,
+    title: track.title,
+    artist: track.user && track.user.username,
+    duration: Math.round((track.duration || 0) / 1000),
+  };
+}
+
 async function resolveTrack(scUrl) {
   let lastErr = null;
-  const ids = workingId
-    ? [workingId, ...SC_CLIENT_IDS.filter((i) => i !== workingId)]
-    : SC_CLIENT_IDS;
+  const tried = new Set();
 
-  for (const cid of ids) {
+  const tryId = async (cid, label) => {
+    if (!cid || tried.has(cid)) return null;
+    tried.add(cid);
     try {
-      const r = await scFetch(
-        `https://api-v2.soundcloud.com/resolve?url=${encodeURIComponent(scUrl)}`,
-        cid
-      );
-      if (r.status === 401 || r.status === 403) {
-        lastErr = new Error(`client_id rejected (${r.status})`);
-        if (workingId === cid) workingId = null;
-        continue;
-      }
-      if (!r.ok) {
-        lastErr = new Error(`resolve status ${r.status}`);
-        continue;
-      }
-      const track = await r.json();
-      if (track.kind !== 'track') throw new Error('URL is not a single track');
-      if (!track.media || !Array.isArray(track.media.transcodings) || !track.media.transcodings.length) {
-        throw new Error('no streams available');
-      }
-
-      const tr =
-        track.media.transcodings.find(
-          (t) => t.format && t.format.protocol === 'progressive'
-        ) ||
-        track.media.transcodings.find(
-          (t) => t.format && t.format.protocol === 'hls'
-        );
-      if (!tr) throw new Error('no usable transcoding');
-
-      const sr = await scFetch(tr.url, cid);
-      if (!sr.ok) {
-        lastErr = new Error(`stream-url status ${sr.status}`);
-        continue;
-      }
-      const body = await sr.json();
-      if (!body || !body.url) throw new Error('empty stream url');
-
+      const result = await attemptResolve(scUrl, cid);
       workingId = cid;
-      return {
-        streamUrl: body.url,
-        protocol: tr.format.protocol,
-        title: track.title,
-        artist: track.user && track.user.username,
-        duration: Math.round((track.duration || 0) / 1000),
-      };
+      return result;
     } catch (e) {
       lastErr = e;
+      if (e.rejected && workingId === cid) workingId = null;
+      console.warn(`SC: ${label} ${cid.slice(0, 6)}… → ${e.message}`);
+      return null;
     }
+  };
+
+  // 1) freshly scraped (cached up to TTL)
+  let result = await tryId(await scrapeClientId(false), 'scraped');
+  if (result) return result;
+
+  // 2) last known working
+  result = await tryId(workingId, 'working');
+  if (result) return result;
+
+  // 3) hardcoded fallbacks
+  for (const cid of SC_FALLBACK_IDS) {
+    result = await tryId(cid, 'fallback');
+    if (result) return result;
   }
+
+  // 4) force a fresh scrape (cache likely stale) and retry once
+  const fresh = await scrapeClientId(true);
+  if (fresh) {
+    result = await tryId(fresh, 'scrape-retry');
+    if (result) return result;
+  }
+
   throw lastErr || new Error('all client_ids failed');
 }
 
@@ -164,6 +228,17 @@ app.get('/api/sc/playlist', async (req, res) => {
 
 app.get('/healthz', (_req, res) => res.json({ ok: true }));
 
+app.get('/api/sc/clientid', async (req, res) => {
+  const force = req.query.force === '1';
+  const id = await scrapeClientId(force);
+  res.json({
+    scraped: id ? id.slice(0, 6) + '…' : null,
+    working: workingId ? workingId.slice(0, 6) + '…' : null,
+    scrapedAtMs: scrapedAt,
+    fallbacks: SC_FALLBACK_IDS.length,
+  });
+});
+
 app.use(
   express.static(path.join(__dirname, 'public'), {
     setHeaders: (res, filePath) => {
@@ -175,4 +250,6 @@ app.use(
 const port = Number(process.env.PORT || 3000);
 app.listen(port, '0.0.0.0', () => {
   console.log(`tabata server listening on 0.0.0.0:${port}`);
+  // Warm the SoundCloud client_id cache so the first request is fast.
+  scrapeClientId(true).catch((e) => console.warn('SC warmup failed:', e.message));
 });
