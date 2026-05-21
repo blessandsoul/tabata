@@ -97,22 +97,6 @@
     margin-top: 10px;
   }
 
-  .opt {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    font-size: 22px;
-    letter-spacing: 3px;
-    cursor: pointer;
-    user-select: none;
-    margin-top: 4px;
-  }
-  .opt input[type="checkbox"] {
-    width: 22px;
-    height: 22px;
-    cursor: pointer;
-    accent-color: #fff;
-  }
   .opt-hint {
     font-size: 16px;
     letter-spacing: 2px;
@@ -128,41 +112,6 @@
     flex-direction: column;
     align-items: center;
     gap: 6px;
-  }
-  .music-btn {
-    background: transparent;
-    color: #fff;
-    border: 2px dashed #fff;
-    font-family: 'VT323', monospace;
-    font-size: 22px;
-    letter-spacing: 3px;
-    padding: 10px 24px;
-    cursor: pointer;
-    max-width: 320px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .music-btn.loaded { border-style: solid; }
-  .music-btn:focus { outline: none; }
-  .music-clear {
-    background: none;
-    border: none;
-    color: #fff;
-    font-family: 'VT323', monospace;
-    font-size: 18px;
-    letter-spacing: 2px;
-    cursor: pointer;
-    opacity: 0.6;
-    display: none;
-  }
-  .music-clear.show { display: inline; }
-
-  .music-sep {
-    font-size: 18px;
-    letter-spacing: 4px;
-    opacity: 0.5;
-    margin: 2px 0;
   }
   .sc-url {
     width: 320px;
@@ -304,18 +253,10 @@
     </div>
 
     <div class="music-row">
-      <input type="file" id="musicFileInput" accept="audio/*" hidden />
-      <button type="button" id="musicBtn" class="music-btn">+ ADD MUSIC FILE</button>
-      <button type="button" id="musicClearBtn" class="music-clear">REMOVE</button>
-      <div class="music-sep">— OR —</div>
       <input type="url" id="scUrlInput" class="sc-url" placeholder="PASTE SOUNDCLOUD URL" autocomplete="off" inputmode="url" spellcheck="false" />
     </div>
 
-    <label class="opt" id="mixOpt">
-      <input type="checkbox" id="mixWithMusic" />
-      <span>MIX WITH EXTERNAL APP</span>
-    </label>
-    <div class="opt-hint" id="optHint">SOLO MODE — TIMER SURVIVES SCREEN LOCK BUT PAUSES OTHER MUSIC APPS</div>
+    <div class="opt-hint" id="optHint">SOLO MODE — TIMER SURVIVES SCREEN LOCK</div>
 
     <div class="start-row">
       <button type="submit" class="start-btn">START</button>
@@ -363,18 +304,10 @@
   const stopBtn  = $('stopBtn');
   const againBtn = $('againBtn');
 
-  const audioEl       = $('audioEl');
-  const statusEl      = $('status');
-  const mixCb         = $('mixWithMusic');
-  const mixOpt        = $('mixOpt');
-  const optHint       = $('optHint');
-  const musicFileEl   = $('musicFileInput');
-  const musicBtn      = $('musicBtn');
-  const musicClearBtn = $('musicClearBtn');
-  const scUrlInput    = $('scUrlInput');
-
-  let musicURL = null;
-  let musicFileName = null;
+  const audioEl    = $('audioEl');
+  const statusEl   = $('status');
+  const optHint    = $('optHint');
+  const scUrlInput = $('scUrlInput');
 
   // ---------- SoundCloud (via our same-origin backend proxy) ----------
   // The browser can't talk to api-v2.soundcloud.com directly (no CORS).
@@ -404,50 +337,13 @@
   }
 
   function updateOptHint() {
-    const hasSc = isSoundCloudUrl(scUrlInput.value);
-    if (musicURL || hasSc) {
-      if (musicURL) {
-        optHint.textContent = 'MUSIC FILE — TRACK + WORKOUT BEEPS PLAY TOGETHER AND SURVIVE SCREEN LOCK.';
-      } else {
-        optHint.textContent = 'SOUNDCLOUD — TRACK + WORKOUT BEEPS PLAY TOGETHER AND SURVIVE SCREEN LOCK. PUBLIC TRACKS ONLY.';
-      }
-      mixOpt.style.display = 'none';
+    if (isSoundCloudUrl(scUrlInput.value)) {
+      optHint.textContent = 'SOUNDCLOUD — TRACK + WORKOUT BEEPS PLAY TOGETHER AND SURVIVE SCREEN LOCK. PUBLIC TRACKS ONLY.';
     } else {
-      mixOpt.style.display = 'flex';
-      if (mixCb.checked) {
-        optHint.textContent = 'MIX MODE — PLAYS OVER OTHER APPS BUT iOS PAUSES IT ON SCREEN LOCK. KEEP THE SCREEN ON.';
-      } else {
-        optHint.textContent = 'SOLO MODE — TIMER SURVIVES SCREEN LOCK BUT PAUSES OTHER MUSIC APPS.';
-      }
+      optHint.textContent = 'SOLO MODE — TIMER SURVIVES SCREEN LOCK.';
     }
   }
-  mixCb.addEventListener('change', updateOptHint);
   scUrlInput.addEventListener('input', updateOptHint);
-
-  musicBtn.addEventListener('click', () => musicFileEl.click());
-  musicFileEl.addEventListener('change', () => {
-    const file = musicFileEl.files && musicFileEl.files[0];
-    if (!file) return;
-    if (musicURL) URL.revokeObjectURL(musicURL);
-    musicURL = URL.createObjectURL(file);
-    musicFileName = file.name;
-    const shortName = file.name.length > 28 ? file.name.slice(0, 25) + '…' : file.name;
-    musicBtn.textContent = shortName;
-    musicBtn.classList.add('loaded');
-    musicClearBtn.classList.add('show');
-    updateOptHint();
-  });
-  musicClearBtn.addEventListener('click', () => {
-    if (musicURL) URL.revokeObjectURL(musicURL);
-    musicURL = null;
-    musicFileName = null;
-    musicFileEl.value = '';
-    musicBtn.textContent = '+ ADD MUSIC FILE';
-    musicBtn.classList.remove('loaded');
-    musicClearBtn.classList.remove('show');
-    updateOptHint();
-  });
-
   updateOptHint();
 
   function setAudioSession(type) {
@@ -675,9 +571,7 @@
     const work   = Math.max(1, parseInt(workInput.value, 10) || 1);
     const rest   = Math.max(0, parseInt(restInput.value, 10) || 0);
     const scUrl  = scUrlInput.value.trim();
-    const hasFile = !!musicURL;
-    const hasSc   = isSoundCloudUrl(scUrl);
-    const mixMode = !hasFile && !hasSc && mixCb.checked;
+    const hasSc  = isSoundCloudUrl(scUrl);
 
     const plan = buildPlan(rounds, work, rest);
 
@@ -686,11 +580,7 @@
     countdown.textContent = '…';
     roundInfo.textContent = `ROUND 1 / ${rounds}`;
 
-    if (hasFile) {
-      setStatus('LOADING MUSIC…');
-      await new Promise(r => setTimeout(r, 0));
-      await startMusicMode(plan, rounds, work, rest, musicURL, musicFileName);
-    } else if (hasSc) {
+    if (hasSc) {
       setStatus('FETCHING SOUNDCLOUD…');
       let resolved;
       try {
@@ -707,7 +597,7 @@
     } else {
       setStatus('BUILDING AUDIO…');
       await new Promise(r => setTimeout(r, 0));
-      await startBakedWavMode(plan, rounds, work, rest, mixMode);
+      await startBakedWavMode(plan, rounds, work, rest, false);
     }
   }
 
