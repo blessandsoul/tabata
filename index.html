@@ -123,6 +123,41 @@
     margin-top: -8px;
   }
 
+  .music-row {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+  .music-btn {
+    background: transparent;
+    color: #fff;
+    border: 2px dashed #fff;
+    font-family: 'VT323', monospace;
+    font-size: 22px;
+    letter-spacing: 3px;
+    padding: 10px 24px;
+    cursor: pointer;
+    max-width: 320px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .music-btn.loaded { border-style: solid; }
+  .music-btn:focus { outline: none; }
+  .music-clear {
+    background: none;
+    border: none;
+    color: #fff;
+    font-family: 'VT323', monospace;
+    font-size: 18px;
+    letter-spacing: 2px;
+    cursor: pointer;
+    opacity: 0.6;
+    display: none;
+  }
+  .music-clear.show { display: inline; }
+
   .start-btn {
     background: #fff;
     color: #000;
@@ -246,9 +281,15 @@
       <span class="suffix">SECONDS</span>
     </div>
 
-    <label class="opt">
+    <div class="music-row">
+      <input type="file" id="musicFileInput" accept="audio/*" hidden />
+      <button type="button" id="musicBtn" class="music-btn">+ ADD MUSIC FILE</button>
+      <button type="button" id="musicClearBtn" class="music-clear">REMOVE</button>
+    </div>
+
+    <label class="opt" id="mixOpt">
       <input type="checkbox" id="mixWithMusic" />
-      <span>MIX WITH MUSIC</span>
+      <span>MIX WITH EXTERNAL APP</span>
     </label>
     <div class="opt-hint" id="optHint">SOLO MODE — TIMER SURVIVES SCREEN LOCK BUT PAUSES OTHER MUSIC APPS</div>
 
@@ -298,19 +339,57 @@
   const stopBtn  = $('stopBtn');
   const againBtn = $('againBtn');
 
-  const audioEl   = $('audioEl');
-  const statusEl  = $('status');
-  const mixCb     = $('mixWithMusic');
-  const optHint   = $('optHint');
+  const audioEl       = $('audioEl');
+  const statusEl      = $('status');
+  const mixCb         = $('mixWithMusic');
+  const mixOpt        = $('mixOpt');
+  const optHint       = $('optHint');
+  const musicFileEl   = $('musicFileInput');
+  const musicBtn      = $('musicBtn');
+  const musicClearBtn = $('musicClearBtn');
+
+  let musicURL = null;
+  let musicFileName = null;
 
   function updateOptHint() {
-    if (mixCb.checked) {
-      optHint.textContent = 'MIX MODE — PLAYS OVER SOUNDCLOUD/YOUTUBE/SPOTIFY. iOS DOES NOT ALLOW MIXED AUDIO TO SURVIVE SCREEN LOCK FOR WEB APPS — KEEP THE SCREEN ON.';
+    if (musicURL) {
+      optHint.textContent = 'MUSIC MODE — TRACK + WORKOUT BEEPS PLAY TOGETHER AND SURVIVE SCREEN LOCK.';
+      mixOpt.style.display = 'none';
     } else {
-      optHint.textContent = 'SOLO MODE — TIMER SURVIVES SCREEN LOCK BUT PAUSES OTHER MUSIC APPS.';
+      mixOpt.style.display = 'flex';
+      if (mixCb.checked) {
+        optHint.textContent = 'MIX MODE — PLAYS OVER OTHER APPS BUT iOS PAUSES IT ON SCREEN LOCK. KEEP THE SCREEN ON.';
+      } else {
+        optHint.textContent = 'SOLO MODE — TIMER SURVIVES SCREEN LOCK BUT PAUSES OTHER MUSIC APPS.';
+      }
     }
   }
   mixCb.addEventListener('change', updateOptHint);
+
+  musicBtn.addEventListener('click', () => musicFileEl.click());
+  musicFileEl.addEventListener('change', () => {
+    const file = musicFileEl.files && musicFileEl.files[0];
+    if (!file) return;
+    if (musicURL) URL.revokeObjectURL(musicURL);
+    musicURL = URL.createObjectURL(file);
+    musicFileName = file.name;
+    const shortName = file.name.length > 28 ? file.name.slice(0, 25) + '…' : file.name;
+    musicBtn.textContent = shortName;
+    musicBtn.classList.add('loaded');
+    musicClearBtn.classList.add('show');
+    updateOptHint();
+  });
+  musicClearBtn.addEventListener('click', () => {
+    if (musicURL) URL.revokeObjectURL(musicURL);
+    musicURL = null;
+    musicFileName = null;
+    musicFileEl.value = '';
+    musicBtn.textContent = '+ ADD MUSIC FILE';
+    musicBtn.classList.remove('loaded');
+    musicClearBtn.classList.remove('show');
+    updateOptHint();
+  });
+
   updateOptHint();
 
   function setAudioSession(type) {
@@ -348,6 +427,9 @@
   audioEl.addEventListener('pause', () => {
     if (state && !state.paused && document.visibilityState === 'visible') {
       audioEl.play().catch(() => {});
+      if (state.mode === 'music' && state.ctx && state.ctx.state === 'suspended') {
+        state.ctx.resume().catch(() => {});
+      }
     }
   });
 
@@ -446,6 +528,35 @@
     return new Blob([buf], { type: 'audio/wav' });
   }
 
+  // ---------- Web Audio graph (reused across runs) ----------
+  let webCtx = null;
+  let mediaElSrc = null;       // createMediaElementSource(audioEl); only callable once
+  function ensureWebCtx() {
+    if (!webCtx) {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      webCtx = new Ctx();
+    }
+    if (webCtx.state === 'suspended') webCtx.resume();
+    if (!mediaElSrc) {
+      try { mediaElSrc = webCtx.createMediaElementSource(audioEl); } catch {}
+    }
+    return webCtx;
+  }
+
+  function scheduleBeepOsc(ctx, dest, when, cfg) {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = cfg.type === 'saw' ? 'sawtooth' : (cfg.type === 'square' ? 'square' : 'sine');
+    osc.frequency.setValueAtTime(cfg.freq, Math.max(when, ctx.currentTime));
+    gain.gain.setValueAtTime(0, when);
+    gain.gain.linearRampToValueAtTime(cfg.gain, when + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, when + cfg.dur);
+    osc.connect(gain).connect(dest);
+    osc.start(when);
+    osc.stop(when + cfg.dur + 0.1);
+    return osc;
+  }
+
   // ---------- Run state ----------
   let state = null;
   let lastDisplayedSecond = null;
@@ -466,8 +577,10 @@
 
   function renderUI() {
     if (!state) return;
-    const elapsed = audioEl.currentTime;
-    if (elapsed >= state.plan.total - 0.05 || audioEl.ended) {
+    const elapsed = state.mode === 'music'
+      ? webCtx.currentTime - state.startTime
+      : audioEl.currentTime;
+    if (elapsed >= state.plan.total - 0.05 || (state.mode !== 'music' && audioEl.ended)) {
       finish();
       return;
     }
@@ -503,7 +616,8 @@
     const rounds = Math.max(1, parseInt(roundsInput.value, 10) || 1);
     const work   = Math.max(1, parseInt(workInput.value, 10) || 1);
     const rest   = Math.max(0, parseInt(restInput.value, 10) || 0);
-    const mixMode = mixCb.checked;
+    const hasMusic = !!musicURL;
+    const mixMode = !hasMusic && mixCb.checked;
 
     const plan = buildPlan(rounds, work, rest);
 
@@ -511,11 +625,99 @@
     phaseLabel.textContent = 'PREPARING';
     countdown.textContent = '…';
     roundInfo.textContent = `ROUND 1 / ${rounds}`;
-    setStatus('BUILDING AUDIO…');
+    setStatus(hasMusic ? 'LOADING MUSIC…' : 'BUILDING AUDIO…');
 
     // yield one frame so the UI updates before we crunch samples
     await new Promise(r => setTimeout(r, 0));
 
+    if (hasMusic) {
+      await startMusicMode(plan, rounds, work, rest);
+    } else {
+      await startBakedWavMode(plan, rounds, work, rest, mixMode);
+    }
+  }
+
+  async function startMusicMode(plan, rounds, work, rest) {
+    const ctx = ensureWebCtx();
+    if (!mediaElSrc) {
+      setStatus('AUDIO ROUTING FAILED', true);
+      show(setupForm);
+      return;
+    }
+
+    audioEl.src = musicURL;
+    audioEl.loop = true;
+
+    // Disconnect previous run's graph (musicGain, scheduled oscillators
+    // are recreated each run; mediaElSrc itself is reused).
+    try { mediaElSrc.disconnect(); } catch {}
+
+    const musicGain = ctx.createGain();
+    musicGain.gain.value = 0.7;
+    mediaElSrc.connect(musicGain).connect(ctx.destination);
+
+    const beepBus = ctx.createGain();
+    beepBus.gain.value = 1.0;
+    beepBus.connect(ctx.destination);
+
+    const t0 = ctx.currentTime + 0.25;
+    const scheduled = [];
+    for (const seg of plan.segments) {
+      for (let n = 3; n >= 1; n--) {
+        const at = seg.end - n;
+        if (at >= 0) scheduled.push(scheduleBeepOsc(ctx, beepBus, t0 + at, BEEP_CFG[n]));
+      }
+      scheduled.push(scheduleBeepOsc(ctx, beepBus, t0 + seg.end, BEEP_CFG.end));
+    }
+
+    setAudioSession('playback');
+
+    state = {
+      plan, rounds, work, rest, paused: false, uiInterval: null,
+      mode: 'music',
+      ctx, startTime: t0, musicGain, beepBus, scheduled,
+      pausedElapsed: 0,
+    };
+    lastDisplayedSecond = null;
+
+    try {
+      await audioEl.play();
+      if (ctx.state === 'suspended') await ctx.resume();
+    } catch (e) {
+      teardown();
+      setStatus('TAP START AGAIN TO ALLOW AUDIO', true);
+      show(setupForm);
+      return;
+    }
+
+    requestWakeLock();
+    setStatus('MUSIC + TIMER — OK TO LOCK SCREEN');
+
+    if ('mediaSession' in navigator) {
+      try {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title:  musicFileName || 'TABATA',
+          artist: `${rounds} × ${work}s / ${rest}s`,
+          album:  'Workout Timer',
+        });
+        navigator.mediaSession.playbackState = 'playing';
+        navigator.mediaSession.setActionHandler('pause', togglePause);
+        navigator.mediaSession.setActionHandler('play',  togglePause);
+        navigator.mediaSession.setActionHandler('stop',  stop);
+        if (navigator.mediaSession.setPositionState) {
+          navigator.mediaSession.setPositionState({
+            duration: plan.total, playbackRate: 1, position: 0,
+          });
+        }
+      } catch {}
+    }
+
+    pauseBtn.textContent = 'PAUSE';
+    state.uiInterval = setInterval(renderUI, 200);
+    renderUI();
+  }
+
+  async function startBakedWavMode(plan, rounds, work, rest, mixMode) {
     // In solo mode we embed a quiet noise floor so iOS treats the
     // playback as active media (lets it survive the lock screen).
     // In mix mode we omit it so it doesn't muddy the user's music.
@@ -524,14 +726,12 @@
     audioEl.src = url;
     audioEl.loop = false;
 
-    // Switch the iOS audio session type BEFORE play().
-    // Solo mode → 'playback' (survives screen lock, takes over the audio session).
-    // Mix mode  → 'auto' so WebKit picks the most permissive mixing category
-    //             we have access to. iOS does NOT expose playback+mixWithOthers
-    //             to web apps, so mix mode cannot also survive screen lock.
     setAudioSession(mixMode ? 'auto' : 'playback');
 
-    state = { plan, rounds, work, rest, paused: false, audioUrl: url, uiInterval: null, mixMode };
+    state = {
+      plan, rounds, work, rest, paused: false,
+      mode: 'baked', audioUrl: url, uiInterval: null, mixMode,
+    };
     lastDisplayedSecond = null;
 
     try {
@@ -577,6 +777,7 @@
   function pause() {
     if (!state || state.paused) return;
     audioEl.pause();
+    if (state.mode === 'music' && state.ctx) state.ctx.suspend().catch(() => {});
     state.paused = true;
     pauseBtn.textContent = 'RESUME';
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
@@ -584,6 +785,7 @@
 
   function resume() {
     if (!state || !state.paused) return;
+    if (state.mode === 'music' && state.ctx) state.ctx.resume().catch(() => {});
     audioEl.play().catch(() => {});
     state.paused = false;
     pauseBtn.textContent = 'PAUSE';
@@ -598,7 +800,12 @@
   function teardown() {
     if (state) {
       if (state.uiInterval) clearInterval(state.uiInterval);
-      if (state.audioUrl) URL.revokeObjectURL(state.audioUrl);
+      // Only revoke baked-WAV blobs; keep musicURL for restart.
+      if (state.mode !== 'music' && state.audioUrl) URL.revokeObjectURL(state.audioUrl);
+      if (state.scheduled) state.scheduled.forEach(o => { try { o.stop(); } catch {} });
+      if (state.mode === 'music' && state.ctx && state.ctx.state === 'suspended') {
+        state.ctx.resume().catch(() => {});
+      }
     }
     state = null;
     lastDisplayedSecond = null;
