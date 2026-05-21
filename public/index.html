@@ -376,18 +376,10 @@
   let musicURL = null;
   let musicFileName = null;
 
-  // ---------- SoundCloud (anonymous, scraped client_id) ----------
-  // SoundCloud closed new app registrations in 2021; the only way to play
-  // public SoundCloud tracks from a browser is to use the client_id that
-  // their own website bundles. Rotate this if it stops working — open any
-  // SoundCloud page → view source → grep for "client_id=".
-  const SC_CLIENT_IDS = [
-    'iZIs9mchVcX5lhVRyQGGAYlNPVldzAoX',
-    '2t9loNQH90kzJcsFCODdigxfp325aq4z',
-    'T5R4kgWS2PRf6lzLyIravUMnKlbIxQag',
-    'a3e059563d7fd3372b49b37f00a00bcf',
-  ];
-
+  // ---------- SoundCloud (via our same-origin backend proxy) ----------
+  // The browser can't talk to api-v2.soundcloud.com directly (no CORS).
+  // /api/sc/resolve runs on our server, talks to SoundCloud, and returns
+  // a same-origin stream URL we can play through Web Audio.
   function isSoundCloudUrl(s) {
     if (!s) return false;
     try {
@@ -397,43 +389,18 @@
   }
 
   async function resolveSoundCloudTrack(scUrl) {
-    let lastErr = null;
-    for (const cid of SC_CLIENT_IDS) {
-      try {
-        const r = await fetch(
-          `https://api-v2.soundcloud.com/resolve?url=${encodeURIComponent(scUrl)}&client_id=${cid}`,
-          { credentials: 'omit' }
-        );
-        if (r.status === 401 || r.status === 403) { lastErr = new Error('client_id rejected'); continue; }
-        if (!r.ok) { lastErr = new Error('resolve status ' + r.status); continue; }
-        const track = await r.json();
-        if (track.kind !== 'track') throw new Error('URL is not a single track');
-        if (!track.media || !track.media.transcodings || !track.media.transcodings.length) {
-          throw new Error('no streams available');
-        }
-        // Prefer progressive MP3, fall back to HLS (Safari plays HLS natively).
-        const tr = track.media.transcodings.find(t =>
-                    t.format && t.format.protocol === 'progressive')
-                || track.media.transcodings.find(t =>
-                    t.format && t.format.protocol === 'hls');
-        if (!tr) throw new Error('no usable transcoding');
-
-        const sep = tr.url.includes('?') ? '&' : '?';
-        const sr = await fetch(`${tr.url}${sep}client_id=${cid}`, { credentials: 'omit' });
-        if (!sr.ok) { lastErr = new Error('stream-url status ' + sr.status); continue; }
-        const { url: streamUrl } = await sr.json();
-        if (!streamUrl) throw new Error('empty stream url');
-
-        return {
-          streamUrl,
-          title:  track.title,
-          artist: track.user && track.user.username,
-        };
-      } catch (e) {
-        lastErr = e;
-      }
+    const r = await fetch(`/api/sc/resolve?url=${encodeURIComponent(scUrl)}`);
+    if (!r.ok) {
+      let msg = `proxy ${r.status}`;
+      try { const d = await r.json(); if (d && d.error) msg = d.error; } catch {}
+      throw new Error(msg);
     }
-    throw lastErr || new Error('all client_ids failed');
+    const t = await r.json();
+    return {
+      streamUrl: t.streamProxyUrl,
+      title:  t.title,
+      artist: t.artist,
+    };
   }
 
   function updateOptHint() {
